@@ -1,0 +1,66 @@
+go-oci8
+=======
+
+DESCRIPTION 简介
+----------------
+
+* oracle driver for go that using database/sql
+* 实现了database/sql的Oracle数据库驱动,使用了OCI
+
+LICENSE
+-------
+
+MIT: http://mattn.mit-license.org/2011
+
+在Windows下安装
+----
+1. 安装最新版的git,并设置可以从命令行直接调用git命令
+2. 下载OCI最新版,存放于C:\instantclient_11_2
+3. 下载OCI SDK最新版,存放于C:\instantclient_11_2\sdk
+4. 下载MinGW最新版,安装在C:\mingw
+5. 下载pkg-config.exe和oci8.pc (已经存放在windows文件夹下)
+6. 将pkg-config.exe复制到C:\mingw\bin\下
+7. 将oci8.pc复制到C:\mingw\lib\pkg-config\下
+8. 修改系统环境变量,添加
+   - PATH=原有PATH;C:\instantclient_11_2;C:\mingw\bin;
+   - PKG_CONFIG_PATH=C:\mingw\lib\pkg-config
+9. 执行 go get github.com/wendal/go-oci8
+
+在mac下安装  
+------------
+步骤1，2，3同上
+oci和oci sdk 下载地址：http://www.oracle.com/technetwork/topics/intel-macsoft-096467.html
+(下载instantclient-basic和instantclient-sdk)
+下载完成后，输入如下命令
+``` 
+   cd <instanclient path>
+   mv libclntsh.dylib.* libclntsh.dylib
+    
+   ln <instanclient path>/libclntsh.dylib /usr/lib/libclntsh.dylib
+   ln <instanclient path>/libocci.dylib.* /usr/lib/libocci.dylib.*
+   ln <instanclient path>/libociei.dylib /usr/lib/libociei.dylib
+   ln <instanclient path>/libnnz11.dylib /usr/lib/libnnz11.dylib
+```
+修改oci8.pc文件
+```
+   prefix=<replace instantclient path>
+   libdir=${prefix}
+   includedir=${prefix}/sdk/include/
+   
+   Name: OCI
+   Description: Oracle database engine
+   Version: 11.2
+   Libs: -L${libdir} -lclntsh
+   Libs.private: 
+   Cflags: -I${includedir}
+```
+由于osx 上默认是没有pkg-config工具的需要手动安装一下
+```
+sudo brew install pkg-config 
+export PKG_COFNIG_PATH="/usr/lib/pkgconfig"
+```
+以上完成后 go get github.com/wendal/go-oci8 就可以了
+
+在Linux下安装
+-------------
+待写
