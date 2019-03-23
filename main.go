@@ -4,11 +4,11 @@ import (
 	"database/sql"
 	"flag"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-oci8"
+	// _"github.com/mattn/go-oci8" // linux
+	_ "github.com/wendal/go-oci8" // windows
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/log"
@@ -19,6 +19,7 @@ var (
 	Version       = "0.0.0.dev"
 	listenAddress = flag.String("web.listen-address", ":9161", "Address to listen on for web interface and telemetry.")
 	metricPath    = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+	configFile    = flag.String("configfile", "oracle.conf", "ConfigurationFile in YAML format.")
 	landingPage   = []byte("<html><head><title>Oracle DB Exporter " + Version + "</title></head><body><h1>Oracle DB Exporter " + Version + "</h1><p><a href='" + *metricPath + "'>Metrics</a></p></body></html>")
 )
 
@@ -30,17 +31,15 @@ const (
 
 // Exporter collects Oracle DB metrics. It implements prometheus.Collector.
 type Exporter struct {
-	dsn             string
 	duration, error prometheus.Gauge
 	totalScrapes    prometheus.Counter
 	scrapeErrors    *prometheus.CounterVec
-	up              prometheus.Gauge
+	up              *prometheus.GaugeVec
 }
 
 // NewExporter returns a new Oracle DB exporter for the provided DSN.
-func NewExporter(dsn string) *Exporter {
+func NewExporter() *Exporter {
 	return &Exporter{
-		dsn: dsn,
 		duration: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: exporter,
@@ -65,11 +64,11 @@ func NewExporter(dsn string) *Exporter {
 			Name:      "last_scrape_error",
 			Help:      "Whether the last scrape of metrics from Oracle DB resulted in an error (1 for error, 0 for success).",
 		}),
-		up: prometheus.NewGauge(prometheus.GaugeOpts{
+		up: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "up",
 			Help:      "Whether the Oracle database server is up.",
-		}),
+		}, []string{"database", "dbinstance", "id"}),
 	}
 }
 
@@ -104,15 +103,17 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
-	e.scrape(ch)
-	ch <- e.duration
-	ch <- e.totalScrapes
-	ch <- e.error
-	e.scrapeErrors.Collect(ch)
-	ch <- e.up
+	for _, conf := range config.Cfgs {
+		e.scrape(ch, conf)
+		ch <- e.duration
+		ch <- e.totalScrapes
+		ch <- e.error
+		e.scrapeErrors.Collect(ch)
+		e.up.Collect(ch)
+	}
 }
 
-func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
+func (e *Exporter) scrape(ch chan<- prometheus.Metric, conf Config) {
 	e.totalScrapes.Inc()
 	var err error
 	defer func(begun time.Time) {
@@ -124,7 +125,7 @@ func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
 		}
 	}(time.Now())
 
-	db, err := sql.Open("oci8", e.dsn)
+	db, err := sql.Open("oci8", conf.Connection)
 	if err != nil {
 		log.Errorln("Error opening connection to database:", err)
 		return
@@ -134,42 +135,67 @@ func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
 	isUpRows, err := db.Query("SELECT 1 FROM DUAL")
 	if err != nil {
 		log.Errorln("Error pinging oracle:", err)
-		e.up.Set(0)
+		e.up.WithLabelValues(conf.Database, conf.Instance, conf.Id).Set(0)
 		return
 	}
 	isUpRows.Close()
-	e.up.Set(1)
+	e.up.WithLabelValues(conf.Database, conf.Instance, conf.Id).Set(1)
 
-	if err = ScrapeActivity(db, ch); err != nil {
+	if err = ScrapeActivity(db, conf, ch); err != nil {
 		log.Errorln("Error scraping for activity:", err)
 		e.scrapeErrors.WithLabelValues("activity").Inc()
 	}
 
-	if err = ScrapeTablespace(db, ch); err != nil {
+	if err = ScrapeTablespace(db, conf, ch); err != nil {
 		log.Errorln("Error scraping for tablespace:", err)
 		e.scrapeErrors.WithLabelValues("tablespace").Inc()
 	}
 
-	if err = ScrapeWaitTime(db, ch); err != nil {
+	if err = ScrapeWaitTime(db, conf, ch); err != nil {
 		log.Errorln("Error scraping for wait_time:", err)
 		e.scrapeErrors.WithLabelValues("wait_time").Inc()
 	}
 
-	if err = ScrapeSessions(db, ch); err != nil {
+	if err = ScrapeSessions(db, conf, ch); err != nil {
 		log.Errorln("Error scraping for sessions:", err)
 		e.scrapeErrors.WithLabelValues("sessions").Inc()
 	}
 
-	if err = ScrapeProcesses(db, ch); err != nil {
+	if err = ScrapeProcesses(db, conf, ch); err != nil {
 		log.Errorln("Error scraping for process:", err)
 		e.scrapeErrors.WithLabelValues("process").Inc()
+	}
+
+	if err = ScrapeUptime(db, conf, ch); err != nil {
+		log.Errorln("Error scraping for uptime:", err)
+		e.scrapeErrors.WithLabelValues("uptime").Inc()
+	}
+
+	if err = ScrapeTopSQL(db, conf, ch); err != nil {
+		log.Errorln("Error scraping for topSQL:", err)
+		e.scrapeErrors.WithLabelValues("topSQL").Inc()
+	}
+
+	if err = ScrapeAsmspace(db, conf, ch); err != nil {
+		log.Errorln("Error scraping for asmspace:", err)
+		e.scrapeErrors.WithLabelValues("asmspace").Inc()
+	}
+
+	if err = ScrapeIOPS(db, conf, ch); err != nil {
+		log.Errorln("Error scraping for iops:", err)
+		e.scrapeErrors.WithLabelValues("iops").Inc()
+	}
+
+	if err = ScrapeCache(db, conf, ch); err != nil {
+		log.Errorln("Error scraping for cache:", err)
+		e.scrapeErrors.WithLabelValues("cache").Inc()
 	}
 
 }
 
 // ScrapeProcesses gets information about the currently active processes.
 
-func ScrapeProcesses(db *sql.DB, ch chan<- prometheus.Metric) error {
+func ScrapeProcesses(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
 
 	var count float64
 	err := db.QueryRow("SELECT COUNT(*) FROM v$process").Scan(&count)
@@ -179,17 +205,169 @@ func ScrapeProcesses(db *sql.DB, ch chan<- prometheus.Metric) error {
 
 	ch <- prometheus.MustNewConstMetric(
 		prometheus.NewDesc(prometheus.BuildFQName(namespace, "process", "count"),
-			"Gauge metric with count of processes", []string{}, nil),
+			"Gauge metric with count of processes", []string{"database", "dbinstance", "id"}, nil),
 		prometheus.GaugeValue,
 		count,
+		conf.Database,
+		conf.Instance,
+		conf.Id,
 	)
 
 	return nil
 
 }
 
+func ScrapeTopSQL(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
+	/*	var (
+			rows *sql.Rows
+			err  error
+		)
+
+		rows, err = db.Query(`
+	SELECT * FROM (
+	  SELECT SQL_TEXT,X.ELAPSED_TIME_DELTA,X.EXECUTIONS_DELTA,X.DISK_READS_DELTA,X.DIRECT_WRITES_DELTA,X.IOWAIT_DELTA,X.LOADS_DELTA
+		FROM DBA_HIST_SQLTEXT DHST,
+		(
+	      SELECT DHSS.SQL_ID SQL_ID,
+	    	SUM(LOADS_DELTA) LOADS_DELTA,
+	    	SUM(DHSS.EXECUTIONS_DELTA) EXECUTIONS_DELTA,
+	    	SUM(DHSS.IOWAIT_DELTA) IOWAIT_DELTA,
+	    	SUM(DHSS.ELAPSED_TIME_DELTA) ELAPSED_TIME_DELTA,
+	    	SUM(DHSS.DISK_READS_DELTA) DISK_READS_DELTA,
+	    	SUM(DHSS.DIRECT_WRITES_DELTA) DIRECT_WRITES_DELTA
+	      	  FROM DBA_HIST_SQLSTAT DHSS
+	          	GROUP BY DHSS.SQL_ID
+		)X
+	  	  WHERE COMMAND_TYPE != 47
+			ORDER BY X.ELAPSED_TIME_DELTA DESC
+	)
+	where rownum < 6
+	`)
+
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				sql      string
+				elapsedTime   float64
+				executions    float64
+				diskReads     float64
+				directWrites  float64
+				ioWait  	  float64
+				loads   	  float64
+
+			)
+			if err := rows.Scan(&sql, &elapsedTime, &executions, &diskReads, &directWrites, &ioWait, &loads); err != nil {
+				return err
+			}
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, "sql", "top"),
+					"Gauge metric with count of sessions by status and type", []string{"database", "dbinstance", "id", "sql", "loads", "ioWait", "executions", "diskReads", "directWrites"}, nil),
+				prometheus.GaugeValue,
+				elapsedTime,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+				sql,
+				strconv.FormatFloat(float64(loads), 'f', 6, 64),
+				strconv.FormatFloat(float64(ioWait), 'f', 6, 64),
+				strconv.FormatFloat(float64(executions), 'f', 6, 64),
+				strconv.FormatFloat(float64(diskReads), 'f', 6, 64),
+				strconv.FormatFloat(float64(directWrites), 'f', 6, 64),
+			)
+		}*/
+
+	return nil
+
+}
+
+// ScrapeAsmspace collects ASM metrics
+func ScrapeAsmspace(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
+	/*	var (
+			rows *sql.Rows
+			err  error
+		)
+
+		rows, err = db.Query(`SELECT g.name, sum(d.total_mb), sum(d.free_mb)
+	                                  FROM v$asm_disk d, v$asm_diskgroup g
+	                                 WHERE  d.group_number = g.group_number
+	                                  AND  d.header_status = 'MEMBER'
+	                                 GROUP by  g.name,  g.group_number`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			var tsize float64
+			var tfree float64
+			if err := rows.Scan(&name, &tsize, &tfree); err != nil {
+				return err
+			}
+
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, "asm", "total"),
+					"Gauge metric with total/free size of the ASM Diskgroups.", []string{"database", "dbinstance", "id", "name"}, nil),
+				prometheus.GaugeValue,
+				tsize,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+				name,
+			)
+
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, "asm", "free"),
+					"Gauge metric with total/free size of the ASM Diskgroups.", []string{"database", "dbinstance", "id", "name"}, nil),
+				prometheus.GaugeValue,
+				tfree,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+				name,
+			)
+
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, "asm", "used"),
+					"Gauge metric with total/free size of the ASM Diskgroups.", []string{"database", "dbinstance", "id", "name"}, nil),
+				prometheus.GaugeValue,
+				tsize-tfree,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+				name,
+			)
+		}*/
+	return nil
+}
+
+// ScrapeUptime Instance uptime
+func ScrapeUptime(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
+
+	/*	var uptime float64
+		err := db.QueryRow("select sysdate-startup_time from v$instance").Scan(&uptime)
+		if err != nil {
+			return err
+		}
+
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "up", "time"),
+				"Gauge metric with uptime in days of the Instance.", []string{"database", "dbinstance", "id"}, nil),
+			prometheus.GaugeValue,
+			uptime,
+			conf.Database,
+			conf.Instance,
+			conf.Id,
+		)*/
+
+	return nil
+}
+
 // ScrapeSessions collects session metrics from the v$session view.
-func ScrapeSessions(db *sql.DB, ch chan<- prometheus.Metric) error {
+func ScrapeSessions(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
 	var (
 		rows *sql.Rows
 		err  error
@@ -214,11 +392,14 @@ func ScrapeSessions(db *sql.DB, ch chan<- prometheus.Metric) error {
 		}
 		ch <- prometheus.MustNewConstMetric(
 			prometheus.NewDesc(prometheus.BuildFQName(namespace, "sessions", "activity"),
-				"Gauge metric with count of sessions by status and type", []string{"status", "type"}, nil),
+				"Gauge metric with count of sessions by status and type", []string{"database", "dbinstance", "status", "type", "id"}, nil),
 			prometheus.GaugeValue,
 			count,
+			conf.Database,
+			conf.Instance,
 			status,
 			sessionType,
+			conf.Id,
 		)
 
 		// These metrics are deprecated though so as to not break existing monitoring straight away, are included for the next few releases.
@@ -233,21 +414,27 @@ func ScrapeSessions(db *sql.DB, ch chan<- prometheus.Metric) error {
 
 	ch <- prometheus.MustNewConstMetric(
 		prometheus.NewDesc(prometheus.BuildFQName(namespace, "sessions", "active"),
-			"Gauge metric with count of sessions marked ACTIVE. DEPRECATED: use sum(oracledb_sessions_activity{status='ACTIVE}) instead.", []string{}, nil),
+			"Gauge metric with count of sessions marked ACTIVE. DEPRECATED: use sum(oracledb_sessions_activity{status='ACTIVE}) instead.", []string{"database", "dbinstance", "id"}, nil),
 		prometheus.GaugeValue,
 		activeCount,
+		conf.Database,
+		conf.Instance,
+		conf.Id,
 	)
 	ch <- prometheus.MustNewConstMetric(
 		prometheus.NewDesc(prometheus.BuildFQName(namespace, "sessions", "inactive"),
-			"Gauge metric with count of sessions marked INACTIVE. DEPRECATED: use sum(oracledb_sessions_activity{status='INACTIVE'}) instead.", []string{}, nil),
+			"Gauge metric with count of sessions marked INACTIVE. DEPRECATED: use sum(oracledb_sessions_activity{status='INACTIVE'}) instead.", []string{"database", "dbinstance", "id"}, nil),
 		prometheus.GaugeValue,
 		inactiveCount,
+		conf.Database,
+		conf.Instance,
+		conf.Id,
 	)
 	return nil
 }
 
 // ScrapeWaitTime collects wait time metrics from the v$waitclassmetric view.
-func ScrapeWaitTime(db *sql.DB, ch chan<- prometheus.Metric) error {
+func ScrapeWaitTime(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
 	var (
 		rows *sql.Rows
 		err  error
@@ -265,22 +452,34 @@ func ScrapeWaitTime(db *sql.DB, ch chan<- prometheus.Metric) error {
 		}
 		name = cleanName(name)
 		ch <- prometheus.MustNewConstMetric(
-			prometheus.NewDesc(prometheus.BuildFQName(namespace, "wait_time", name),
-				"Generic counter metric from v$waitclassmetric view in Oracle.", []string{}, nil),
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "wait_class", "time"),
+				"Generic counter metric from v$waitclassmetric view in Oracle.", []string{"database", "dbinstance", "id", "type"}, nil),
 			prometheus.CounterValue,
 			value,
+			conf.Database,
+			conf.Instance,
+			conf.Id,
+			name,
 		)
 	}
 	return nil
 }
 
 // ScrapeActivity collects activity metrics from the v$sysstat view.
-func ScrapeActivity(db *sql.DB, ch chan<- prometheus.Metric) error {
+func ScrapeActivity(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
 	var (
 		rows *sql.Rows
 		err  error
 	)
-	rows, err = db.Query("SELECT name, value FROM v$sysstat WHERE name IN ('parse count (total)', 'execute count', 'user commits', 'user rollbacks')")
+	rows, err = db.Query(`
+SELECT name, value 
+  FROM v$sysstat 
+  	WHERE name IN ('parse count (total)', 'parse time cpu', 'parse time elapsed', 'parse count (hard)', 'execute count', 'opened cursors current', 'session cursor cache count', 'user commits', 'user rollbacks', 'user calls', 'transaction rollbacks', 'redo size', 'logons current',
+  	  'physical reads', 'physical writes', 'physical reads cache', 'db block gets', 'consistent gets', 'lob reads', 'lob writes',
+	  'bytes received via SQL*Net from client', 'bytes sent via SQL*Net to client',
+	  'index fast full scans (full)'
+  	)
+`)
 	if err != nil {
 		return err
 	}
@@ -293,18 +492,50 @@ func ScrapeActivity(db *sql.DB, ch chan<- prometheus.Metric) error {
 			return err
 		}
 		name = cleanName(name)
-		ch <- prometheus.MustNewConstMetric(
-			prometheus.NewDesc(prometheus.BuildFQName(namespace, "activity", name),
-				"Generic counter metric from v$sysstat view in Oracle.", []string{}, nil),
-			prometheus.CounterValue,
-			value,
-		)
+
+		var subsystem string
+		var dbBlockField = "physical_reads,physical_writes,physical_reads_cache,db_block_gets,consistent_gets,lob_reads,lob_writes"
+		var netTransfer = "bytes_received_via_sql*net_from_client,bytes_sent_via_sql*net_to_client"
+
+		if name == "index_fast_full_scans_full" {
+			subsystem = "index"
+		} else if strings.Contains(dbBlockField, name) {
+			subsystem = "block"
+		} else if strings.Contains(netTransfer, name) {
+			subsystem = "net"
+			name = strings.Split(name, "_")[0] + strings.Split(name, "_")[1]
+		} else {
+			subsystem = "activity"
+		}
+
+		if subsystem == "activity" && strings.Contains(name, "user") {
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, "user"),
+					"Generic counter metric from v$sysstat view in Oracle.", []string{"database", "dbinstance", "id", "type"}, nil),
+				prometheus.CounterValue,
+				value,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+				name,
+			)
+		} else {
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, subsystem, name),
+					"Generic counter metric from v$sysstat view in Oracle.", []string{"database", "dbinstance", "id"}, nil),
+				prometheus.CounterValue,
+				value,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+			)
+		}
 	}
 	return nil
 }
 
 // ScrapeTablespace collects tablespace size.
-func ScrapeTablespace(db *sql.DB, ch chan<- prometheus.Metric) error {
+func ScrapeTablespace(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
 	var (
 		rows *sql.Rows
 		err  error
@@ -390,17 +621,17 @@ WHERE
 	tablespaceBytesDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "tablespace", "bytes"),
 		"Generic counter metric of tablespaces bytes in Oracle.",
-		[]string{"tablespace", "type"}, nil,
+		[]string{"database", "dbinstance", "tablespace", "type", "id"}, nil,
 	)
 	tablespaceMaxBytesDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "tablespace", "max_bytes"),
 		"Generic counter metric of tablespaces max bytes in Oracle.",
-		[]string{"tablespace", "type"}, nil,
+		[]string{"database", "dbinstance", "tablespace", "type", "id"}, nil,
 	)
 	tablespaceFreeBytesDesc := prometheus.NewDesc(
 		prometheus.BuildFQName(namespace, "tablespace", "free"),
 		"Generic counter metric of tablespaces free bytes in Oracle.",
-		[]string{"tablespace", "type"}, nil,
+		[]string{"database", "dbinstance", "tablespace", "type", "id"}, nil,
 	)
 
 	for rows.Next() {
@@ -415,9 +646,105 @@ WHERE
 		if err := rows.Scan(&tablespace_name, &status, &contents, &extent_management, &bytes, &max_bytes, &bytes_free); err != nil {
 			return err
 		}
-		ch <- prometheus.MustNewConstMetric(tablespaceBytesDesc, prometheus.GaugeValue, float64(bytes), tablespace_name, contents)
-		ch <- prometheus.MustNewConstMetric(tablespaceMaxBytesDesc, prometheus.GaugeValue, float64(max_bytes), tablespace_name, contents)
-		ch <- prometheus.MustNewConstMetric(tablespaceFreeBytesDesc, prometheus.GaugeValue, float64(bytes_free), tablespace_name, contents)
+		ch <- prometheus.MustNewConstMetric(tablespaceBytesDesc, prometheus.GaugeValue, float64(bytes), conf.Database, conf.Instance, tablespace_name, contents, conf.Id)
+		ch <- prometheus.MustNewConstMetric(tablespaceMaxBytesDesc, prometheus.GaugeValue, float64(max_bytes), conf.Database, conf.Instance, tablespace_name, contents, conf.Id)
+		ch <- prometheus.MustNewConstMetric(tablespaceFreeBytesDesc, prometheus.GaugeValue, float64(bytes_free), conf.Database, conf.Instance, tablespace_name, contents, conf.Id)
+	}
+	return nil
+}
+
+// ScrapeIOPS collects IOPS metrics from the v$sysmetrics view.
+func ScrapeIOPS(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+
+	//metric_id  metric_name
+	//2092    Physical Read Total IO Requests Per Sec
+	//2093    Physical Read Total Bytes Per Sec
+	//2100    Physical Write Total IO Requests Per Sec
+	//2124    Physical Write Total Bytes Per Sec
+	//2106    SQL Service Response Time
+	rows, err = db.Query("select metric_name,value from v$sysmetric where metric_id in (2092,2093,2124,2100,2106)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var value float64
+		if err := rows.Scan(&name, &value); err != nil {
+			break
+		}
+		name = cleanName(name)
+
+		if name == "sql_service_response_time" {
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, "response", name),
+					"Generic counter metric from v$sysmetric view in Oracle.", []string{"database", "dbinstance", "id"}, nil),
+				prometheus.CounterValue,
+				value,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+			)
+		} else {
+			var n string
+			if strings.Contains(name, "requests") {
+				n = "iops"
+			} else {
+				n = "throughput"
+			}
+
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, "physical", n),
+					"Generic counter metric from v$sysmetric view in Oracle.", []string{"database", "dbinstance", "id", "type"}, nil),
+				prometheus.CounterValue,
+				value,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+				name,
+			)
+		}
+	}
+	return nil
+}
+
+// ScrapeCache collects session metrics from the v$sysmetrics view.
+func ScrapeCache(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	//metric_id  metric_name
+	//2000    Buffer Cache Hit Ratio
+	//2050    Cursor Cache Hit Ratio
+	//2112    Library Cache Hit Ratio
+	//2110    Row Cache Hit Ratio
+	rows, err = db.Query(`select metric_name,value from v$sysmetric where group_id=2 and metric_id in (2000,2050,2112,2110)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var value float64
+		if err := rows.Scan(&name, &value); err != nil {
+			break
+		}
+		name = cleanName(name)
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "cache", "hitratio"),
+				"Gauge metric witch Cache hit ratios (v$sysmetric).", []string{"database", "dbinstance", "id", "type"}, nil),
+			prometheus.CounterValue,
+			value,
+			conf.Database,
+			conf.Instance,
+			conf.Id,
+			name,
+		)
 	}
 	return nil
 }
@@ -435,13 +762,16 @@ func cleanName(s string) string {
 func main() {
 	flag.Parse()
 	log.Infoln("Starting oracledb_exporter " + Version)
-	dsn := os.Getenv("DATA_SOURCE_NAME")
-	exporter := NewExporter(dsn)
-	prometheus.MustRegister(exporter)
-	http.Handle(*metricPath, prometheus.Handler())
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(landingPage)
-	})
-	log.Infoln("Listening on", *listenAddress)
-	log.Fatal(http.ListenAndServe(*listenAddress, nil))
+	// dsn := os.Getenv("DATA_SOURCE_NAME")
+	// dsn := "infodba/infodba@192.168.1.64:1521/tc"
+	if loadConfig() {
+		exporter := NewExporter()
+		prometheus.MustRegister(exporter)
+		http.Handle(*metricPath, prometheus.Handler())
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Write(landingPage)
+		})
+		log.Infoln("Listening on", *listenAddress)
+		log.Fatal(http.ListenAndServe(*listenAddress, nil))
+	}
 }
