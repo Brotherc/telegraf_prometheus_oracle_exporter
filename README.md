@@ -1,4 +1,9 @@
 # Oracle DB Exporter
+Binary Release
+-
+```
+oracledb_exporter.exe已是最新执行文件
+```
 config
 -
 ```
