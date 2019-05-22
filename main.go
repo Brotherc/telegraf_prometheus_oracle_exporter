@@ -268,22 +268,30 @@ func ScrapeTopSQL(db *sql.DB, conf Config, ch chan<- prometheus.Metric) error {
 		err  error
 	)
 
-	// sql语句中 not like 将exporter的语句过滤
 	rows, err = db.Query(`
 SELECT * FROM (
   SELECT
-    sqt.*, TO_CHAR(dbms_lob.substr(st.sql_text, 3900)) sql_text
+    sqt.sql_id, sqt.max_exec, sqt.max_elapsed, su.username,
+    TO_CHAR(dbms_lob.substr(st.sql_text, 3900)) sql_text
   FROM
     (SELECT
       sql_id,
+      MIN(snap_id) snap_id,
       MAX(executions_delta) max_exec,
       NVL((MAX(elapsed_time_delta) / 1000000), to_number(null)) max_elapsed
     FROM dba_hist_sqlstat
-    GROUP BY sql_id) sqt, dba_hist_sqltext st
+    WHERE module ='tcserver.exe'
+    GROUP BY sql_id) sqt, dba_hist_sqltext st, 
+    (SELECT sql_id, parsing_schema_name username
+      FROM (
+        SELECT t.sql_id,t.parsing_schema_name,row_number() over(partition by t.sql_id order by t.snap_id asc) rn
+        FROM dba_hist_sqlstat t 
+        WHERE module ='tcserver.exe')
+      WHERE rn = 1) su
   WHERE
-    st.sql_id(+) = sqt.sql_id AND st.SQL_TEXT NOT LIKE '%v$%' AND st.SQL_TEXT NOT LIKE '%dba_segments%' AND st.COMMAND_TYPE !=47
+    st.sql_id(+) = sqt.sql_id and su.sql_id(+) = sqt.sql_id
   ORDER BY nvl(sqt.max_elapsed, -1) DESC, sqt.sql_id
-) WHERE rownum <= ` + rownum)
+) WHERE rownum <=` + rownum)
 
 	if err != nil {
 		return err
@@ -295,14 +303,15 @@ SELECT * FROM (
 			sqlId      string
 			maxExec    float64
 			maxElapsed float64
+			username   string
 			sqlText    string
 		)
-		if err := rows.Scan(&sqlId, &maxExec, &maxElapsed, &sqlText); err != nil {
+		if err := rows.Scan(&sqlId, &maxExec, &maxElapsed, &username, &sqlText); err != nil {
 			return err
 		}
 		ch <- prometheus.MustNewConstMetric(
 			prometheus.NewDesc(prometheus.BuildFQName(namespace, "sql", "top"),
-				"Gauge metric with SQL ordered by Elapsed Time", []string{"database", "dbinstance", "id", "sql_id", "sql_text", "sql_exec"}, nil),
+				"Gauge metric with SQL ordered by Elapsed Time", []string{"database", "dbinstance", "id", "sql_id", "sql_text", "sql_exec", "sql_username"}, nil),
 			prometheus.GaugeValue,
 			maxElapsed,
 			conf.Database,
@@ -311,6 +320,7 @@ SELECT * FROM (
 			sqlId,
 			sqlText,
 			strconv.FormatFloat(maxExec, 'E', -1, 64),
+			username,
 		)
 	}
 
@@ -800,7 +810,9 @@ func ScrapePhysicalIO(db *sql.DB, conf Config, ch chan<- prometheus.Metric) erro
 	//2106    SQL Service Response Time
 	//2107    Database CPU Time Ratio
 	//2108    Database Wait Time Ratio
-	rows, err = db.Query("select metric_name,value from v$sysmetric where metric_id in (2092,2093,2124,2100,2106,2107,2108,2026) AND INTSIZE_CSEC = (select max(INTSIZE_CSEC) from V$SYSMETRIC)")
+	//2055	  Soft Parse Ratio
+	//2046	  Hard Parse Count Per Sec
+	rows, err = db.Query("select metric_name,value from v$sysmetric where metric_id in (2092,2093,2124,2100,2106,2107,2108,2026,2055,2046) AND INTSIZE_CSEC = (select max(INTSIZE_CSEC) from V$SYSMETRIC)")
 	if err != nil {
 		return err
 	}
@@ -813,9 +825,9 @@ func ScrapePhysicalIO(db *sql.DB, conf Config, ch chan<- prometheus.Metric) erro
 		}
 		name = cleanName(name)
 
-		if !strings.HasPrefix(name, "physical") {
+		if strings.Contains(name, "parse") {
 			ch <- prometheus.MustNewConstMetric(
-				prometheus.NewDesc(prometheus.BuildFQName(namespace, "workload", "overview"),
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, "parse", "ratio"),
 					"Generic counter metric from v$sysmetric view in Oracle.", []string{"database", "dbinstance", "id", "type"}, nil),
 				prometheus.CounterValue,
 				value,
@@ -824,7 +836,7 @@ func ScrapePhysicalIO(db *sql.DB, conf Config, ch chan<- prometheus.Metric) erro
 				conf.Id,
 				name,
 			)
-		} else {
+		} else if strings.HasPrefix(name, "physical") {
 			var n string
 			if strings.Contains(name, "requests") {
 				n = "iops"
@@ -834,6 +846,17 @@ func ScrapePhysicalIO(db *sql.DB, conf Config, ch chan<- prometheus.Metric) erro
 
 			ch <- prometheus.MustNewConstMetric(
 				prometheus.NewDesc(prometheus.BuildFQName(namespace, "physical", n),
+					"Generic counter metric from v$sysmetric view in Oracle.", []string{"database", "dbinstance", "id", "type"}, nil),
+				prometheus.CounterValue,
+				value,
+				conf.Database,
+				conf.Instance,
+				conf.Id,
+				name,
+			)
+		} else {
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(prometheus.BuildFQName(namespace, "workload", "overview"),
 					"Generic counter metric from v$sysmetric view in Oracle.", []string{"database", "dbinstance", "id", "type"}, nil),
 				prometheus.CounterValue,
 				value,
