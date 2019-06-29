@@ -1,4 +1,5 @@
 # Oracle DB Exporter
+merge：https://github.com/iamseth/oracledb_exporter && https://github.com/freenetdigital/prometheus_oracle_exporter
 Binary Release
 -
 ```
