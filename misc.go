@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"github.com/prometheus/common/log"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
@@ -58,7 +57,6 @@ var (
 )
 
 func loadConfig() bool {
-	fmt.Println(os.Args)
 	path, err := filepath.Abs(filepath.Dir(os.Args[0]))
 	if err != nil {
 		log.Fatalf("error: %v", err)
