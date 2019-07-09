@@ -30,15 +30,100 @@ The following metrics are exposed currently. Support for RAC (databasename and i
 *took very long or Infrequent, be careful (expose the Metrics below by another exporter with Scrape-Config):
 - oracledb_table_top
 
+# StartUp
+```
+go run main.go misc.go
+```
+
 # Installation
 
 Ensure that the configfile (oracle.conf or oracle_table.conf) is set correctly before starting. You can add multiple instances.
 
-# telegraf Configuration
+# telegraf Configuration (scrape oracle-exporter with oracle.conf)
 ```
+[global_tags]
+
+[agent]
+  interval = "60s"                       #change interval
+  round_interval = true
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+  collection_jitter = "0s"
+  flush_interval = "10s"
+  flush_jitter = "0s"
+  precision = ""
+  debug = false
+  quiet = false
+  logfile = ""
+  hostname = ""
+  omit_hostname = false
+
+###############################################################################
+#                            OUTPUT PLUGINS                                   #
+###############################################################################
+[[outputs.influxdb]]
+  urls = ["http://ip:8086"]       #change influxdb url
+  database = "oracledb_monitor"
+
+###############################################################################
+#                            PROCESSOR PLUGINS                                #
+###############################################################################
+[[processors.converter]]
+  [processors.converter.tags]
+    string = ["info_version", "sql_text", "sql_username"]
+    boolean = ["info_is_rac"]
+    float = ["info_uptime", "info_dbtime", "sql_exec"]
+
+###############################################################################
+#                            INPUT PLUGINS                                    #
+###############################################################################
+[[inputs.prometheus]]
+  urls = ["http://ip:port/metrics"]    #change oracle exporter web.listen-address
+  response_timeout = "150s"
 ```
-# influxdb Configuration
+
+# telegraf Configuration (scrape oracle-exporter with oracle_table.conf)
 ```
+[global_tags]
+
+[agent]
+  interval = "24h"                         #change interval (Don't be less than 30s)
+  round_interval = true
+  metric_batch_size = 1000
+  metric_buffer_limit = 10000
+  collection_jitter = "0s"
+  flush_interval = "10s"
+  flush_jitter = "0s"
+  precision = ""
+  debug = false
+  quiet = false
+  logfile = ""
+  hostname = ""
+  omit_hostname = false
+
+###############################################################################
+#                            OUTPUT PLUGINS                                   #
+###############################################################################
+[[outputs.influxdb]]
+  urls = ["http://ip:8086"]       #change influxdb url
+  database = "oracledb_monitor"
+
+###############################################################################
+#                            PROCESSOR PLUGINS                                #
+###############################################################################
+[[processors.converter]]
+  [processors.converter.tags]
+    integer = ["index_bytes", "lob_bytes", "num_rows"]
+    string = ["info_version", "sql_text", "sql_username"]
+    boolean = ["info_is_rac"]
+    float = ["info_uptime", "info_dbtime", "sql_exec"]
+
+###############################################################################
+#                            INPUT PLUGINS                                    #
+###############################################################################
+[[inputs.prometheus]]
+  urls = ["http://ip:port/metrics"]    #change oracle exporter web.listen-address
+  response_timeout = "150s"
 ```
 
 ```bash
