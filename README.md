@@ -1,27 +1,59 @@
-# Oracle DB Exporter
-merge：https://github.com/iamseth/oracledb_exporter && https://github.com/freenetdigital/prometheus_oracle_exporter
-Binary Release
--
+# Telegraf Prometheus Oracle Exporter
+
+A oracle Exporter for (telegraf prometheus input plugins)[https://github.com/influxdata/telegraf/tree/master/plugins/inputs/prometheus]
+
+The following metrics are exposed currently. Support for RAC (databasename and instancename added via lables)
+
+- oracledb_exporter_last_scrape_duration_seconds
+- oracledb_exporter_last_scrape_error
+- oracledb_exporter_scrapes_total
+- oracledb_up_info(dbtime, is_rac, uptime, version)
+- oracledb_process_count
+- oracledb_sql_top
+- oracledb_sessions_activity
+- oracledb_sessions_active
+- oracledb_sessions_inactive
+- oracledb_wait_class_time (view v$waitclass)
+- oracledb_activity_user
+- oracledb_activity_parse
+- oracledb_block_num
+- oracledb_index_index_fast_full_scans_full
+- oracledb_net_bytessent
+- oracledb_net_bytesreceived
+- oracledb_tablespace_size (tablespace total/free)
+- oracledb_parse_ratio
+- oracledb_physical_iops
+- oracledb_physical_throughput
+- oracledb_workload_overview
+- oracledb_cache_hitratio (Cache hit ratios (v$sysmetric)
+
+*took very long or Infrequent, be careful (expose the Metrics below by another exporter with Scrape-Config):
+- oracledb_table_top
+
+# Installation
+
+Ensure that the configfile (oracle.conf or oracle_table.conf) is set correctly before starting. You can add multiple instances.
+
+# telegraf Configuration
 ```
-oracledb_exporter.exe已是最新执行文件
 ```
-config
--
+# influxdb Configuration
 ```
-常见metric请使用oracle.conf
-top_table 的metric获取比较耗时，需要与其他metric配置区分，请使用oracle_table.conf
 ```
-build
--
+
+```bash
+/path/to/binary -configfile=oracle.conf -web.listen-address ip:port or
+/path/to/binary -configfile=oracle_table.conf -web.listen-address ip:port
 ```
-go build 默认构建成exe
-之前尝试过发布成Linux 64位，但是在运行时出现许多问题，暂时只能在windows下运行
-```
-run
--
-```
-oracledb_exporter -configfile=oracle.conf -web.listen-address ip:port
-例如：192.168.1.64上启动
-oracledb_exporter -configfile=oracle.conf -web.listen-address 192.168.1.64:9162
-oracledb_exporter -configfile=oracle_table.conf -web.listen-address 192.168.1.64:9161
+
+## Usage
+
+```bash
+Usage of ./telegraf_prometheus_oracle_exporter:
+  -configfile string
+    	ConfigurationFile in YAML format. (default "oracle.conf")
+  -web.listen-address string
+    	Address to listen on for web interface and telemetry. (default ":9161")
+  -web.telemetry-path string
+    	Path under which to expose metrics. (default "/metrics")
 ```
