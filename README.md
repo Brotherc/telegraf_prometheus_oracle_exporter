@@ -1,6 +1,6 @@
 # Telegraf Prometheus Oracle Exporter
 
-A oracle Exporter for (telegraf prometheus input plugins)[https://github.com/influxdata/telegraf/tree/master/plugins/inputs/prometheus]
+A oracle Exporter for [telegraf prometheus input plugins](https://github.com/influxdata/telegraf/tree/master/plugins/inputs/prometheus)
 
 The following metrics are exposed currently. Support for RAC (databasename and instancename added via lables)
 
