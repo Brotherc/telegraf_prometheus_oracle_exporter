@@ -39,7 +39,8 @@ go run main.go misc.go
 
 Ensure that the configfile (oracle.conf or oracle_table.conf) is set correctly before starting. You can add multiple instances.
 
-# telegraf Configuration (scrape oracle-exporter with oracle.conf)
+# telegraf Configuration
+scrape oracle-exporter with oracle.conf
 ```
 [global_tags]
 
@@ -82,7 +83,8 @@ Ensure that the configfile (oracle.conf or oracle_table.conf) is set correctly b
   response_timeout = "150s"
 ```
 
-# telegraf Configuration (scrape oracle-exporter with oracle_table.conf)
+# telegraf Configuration
+scrape oracle-exporter with oracle_table.conf
 ```
 [global_tags]
 
