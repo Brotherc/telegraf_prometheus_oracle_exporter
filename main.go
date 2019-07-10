@@ -280,13 +280,11 @@ SELECT * FROM (
       MAX(executions_delta) max_exec,
       NVL((MAX(elapsed_time_delta) / 1000000), to_number(null)) max_elapsed
     FROM dba_hist_sqlstat
-    WHERE module ='tcserver.exe'
     GROUP BY sql_id) sqt, dba_hist_sqltext st, 
     (SELECT sql_id, parsing_schema_name username
       FROM (
         SELECT t.sql_id,t.parsing_schema_name,row_number() over(partition by t.sql_id order by t.snap_id asc) rn
-        FROM dba_hist_sqlstat t 
-        WHERE module ='tcserver.exe')
+        FROM dba_hist_sqlstat t)
       WHERE rn = 1) su
   WHERE
     st.sql_id(+) = sqt.sql_id and su.sql_id(+) = sqt.sql_id
